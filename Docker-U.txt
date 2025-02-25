@@ -1,0 +1,242 @@
+## 4.2.1 UnionFS文件系统 ##
+mkdir aufs-test
+cd aufs-test/
+mkdir layer1 layer2 upperlayer mountedfs
+echo "content for file1 in layer1" > layer1/file1
+echo "content for file1 in layer2" > layer2/file1
+echo "content for file2 in layer1" > layer1/file2
+echo "content for file3 in layer2" > layer2/file3
+
+mount -t aufs -o br:upperlayer:layer1:layer2 none mountedfs
+
+echo "new content for file4" > file4
+
+rm file1
+ls -al ../*
+
+echo "new content for file1" > file1
+
+
+## 4.2.2 OverlayFS和Overlay2 ##
+
+docker run --name conaufs --rm -id alpine ash
+
+mount
+
+docker info | grep "Storage Driver"
+
+mkdir overlay-test
+cd overlay-test/
+mkdir layer{1,2} upperlayer workdir mountedfs
+echo "content for file1 in layer1" > layer1/file1
+echo "content for file1 in layer2" > layer2/file1
+echo "content for file2 in layer1" > layer1/file2
+echo "content for file3 in layer2" > layer2/file3
+
+mount -t overlay \
+-o lowerdir=layer1:layer2,upperdir=upperlayer,workdir=workdir \
+overlay mountedfs
+
+echo "new content for file4" > file4
+echo "new content for file1" > file1
+
+
+## 4.2.3 Docer和Overlay2 ##
+
+docker run --name conoverlay --rm -id alpine ash
+
+mount
+
+cd /var/lib/docker/image/overlay2/layerdb/mounts/
+
+
+docker build -t my-ml-app -f Dockerfile .
+docker run -it --rm -p 8888:8888 my-ml-app
+
+
+## 4.2.4 Docer镜像的分层 ##
+
+cat > Dockerfile <<"EOF"
+# 使用官方 Python 3.12 镜像作为基础镜像
+FROM python:3.12-slim
+
+# 设置工作目录
+WORKDIR /app
+
+# 设置环境变量，使用阿里云镜像源
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+# 复制 requirements.txt 文件到容器中
+COPY requirements.txt .
+
+# 安装依赖
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 复制当前目录下的所有文件到容器的工作目录
+COPY . .
+
+# 暴露端口（如果需要）
+EXPOSE 8888
+
+# 设置默认命令（例如启动 Jupyter Notebook）
+CMD ["jupyter", "notebook", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
+EOF
+
+cat > requirements.txt <<"EOF"
+numpy
+pandas
+scikit-learn
+jupyter
+EOF
+
+cat > app.py <<"EOF"
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LinearRegression
+
+# 创建一个简单的数据集
+X = np.array([[1], [2], [3], [4], [5]])
+y = np.array([1, 3, 2, 3, 5])
+
+# 创建线性回归模型
+model = LinearRegression()
+model.fit(X, y)
+
+# 进行预测
+predictions = model.predict([[6]])
+print("Prediction for input 6:", predictions)
+EOF
+
+docker build -t my-ml-app .
+docker run -it --restart always -v /python:/app:Z -p 8888:8888 my-ml-app
+
+
+*************************************
+
+## 4.3 Namespace ##
+
+ls -l /proc/$$/ns
+
+visudo -f /etc/sudoers.d/user1
+%user1  ALL=(ALL)  NOPASSWD: ALL
+
+sudo usermod -aG docker user1
+newgrp docker
+
+docker run --name conns --rm -id alpine ash
+mkdir mancontainer
+cd mancontainer
+docker export conns -o dockercontainer.tar
+
+mkdir rootfs
+tar xf dockercontainer.tar -C rootfs/
+
+$ sudo chroot $PWD/rootfs ash
+ls -l /bin/ls
+ip link
+mount -t proc proc /proc && ps -ef
+
+unshare --mount --uts --ipc --net \
+--pid --fork --user --map-root-user /bin/bash
+echo $$
+ps -ef | grep bash
+
+mount -t proc proc /proc
+ps -ef
+sudo ip link add vethLocal type veth peer name vethContainer
+sudo ip link set vethLocal up
+sudo ip link set vethContainer up
+ps -ef | grep '/bin/bash'
+
+root:mancontainer# chroot rootfs ash
+/ #  mount -t proc none /proc
+/ #  mount -t sysfs none /sys
+/ #  mount -t tmpfs none /tmp
+
+## 4.4 CGroups资源控制组 ##
+
+free -h
+
+ls /sys/fs/cgroup/
+
+apt update && apt install gcc
+gcc -o cgmemdemo cgmemdemo.c
+./cgmemdemo
+
+mkdir /sys/fs/cgroup/memory/demo
+ls /sys/fs/cgroup/memory/demo/
+echo "500000000" > /sys/fs/cgroup/memory/demo/memory.limit_in_bytes
+echo "0" > /sys/fs/cgroup/memory/demo/memory.swappiness
+
+echo $$ > /sys/fs/cgroup/memory/demo/tasks
+
+sudo rmdir /sys/fs/cgroup/memory/demo
+
+
+cat > cgmemdemo.c <<EOF
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main() {
+    // Open the random device in binary mode
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (!f) {
+        perror("Failed to open /dev/urandom");
+        return 1;
+    }
+
+    char *data_ptr = NULL;         // Dynamic memory pointer
+    size_t total_size = 0;         // Total memory size
+    int i = 0;
+    const size_t chunk_size = 10 * 1024 * 1024;  // 10MB
+
+    while (1) {
+        // 1. Allocate a temporary buffer
+        char *temp = malloc(chunk_size);
+        if (!temp) {
+            perror("Failed to allocate temporary buffer");
+            break;
+        }
+
+        // 2. Read 10MB of data from the device
+        size_t bytes_read = fread(temp, 1, chunk_size, f);
+        if (bytes_read != chunk_size) {
+            perror("Failed to read data");
+            free(temp);
+            break;
+        }
+
+        // 3. Expand the main memory buffer
+        char *new_ptr = realloc(data_ptr, total_size + chunk_size);
+        if (!new_ptr) {
+            perror("Failed to expand memory");
+            free(temp);
+            break;
+        }
+        data_ptr = new_ptr;
+        memcpy(data_ptr + total_size, temp, chunk_size);  // Append data
+        total_size += chunk_size;
+
+        free(temp);  // Free the temporary buffer
+
+        // 4. Print the current memory consumption
+        i++;
+        printf("%dmb\n", i * 10);
+        fflush(stdout);  // Force flush the output buffer
+    }
+
+    // Clean up resources
+    free(data_ptr);
+    fclose(f);
+    return 0;
+}
+EOF
+
+
+## docker network ##
+
+
+
+
