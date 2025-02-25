@@ -10,7 +10,7 @@ y = np.array([1, 3, 2, 3, 5])
 model = LinearRegression()
 model.fit(X, y)
 
-# 进行预测
+# 进行预测并输出
 predictions = model.predict([[6]])
 print("Prediction for input 6:", predictions)
 
